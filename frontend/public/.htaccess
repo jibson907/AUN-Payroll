@@ -1,0 +1,21 @@
+# AUN Payroll on Apache/cPanel at https://aun.edu.ng/payrol/
+# Page routes (/payrol/login, /payrol/history/…) are handled by the app, so
+# any path that is not a real file is answered with index.html.
+# /payrol/api/… is left alone: it belongs to the Node backend.
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /payrol/
+  RewriteRule ^index\.html$ - [L]
+  RewriteRule ^api/ - [L]
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule . /payrol/index.html [L]
+</IfModule>
+
+# Never cache the page itself (new uploads take effect at once);
+# hashed files in assets/ can be cached for a long time.
+<IfModule mod_headers.c>
+  <Files "index.html">
+    Header set Cache-Control "no-cache"
+  </Files>
+</IfModule>

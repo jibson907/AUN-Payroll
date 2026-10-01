@@ -1,0 +1,24 @@
+{
+  "name": "aunpayroll",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AUN Payroll — Pay Advice System (React frontend + Node/Express backend + MongoDB Atlas)",
+  "scripts": {
+    "install:all": "npm --prefix backend install && npm --prefix frontend install",
+    "build": "npm --prefix frontend run build",
+    "build:prod": "npm --prefix frontend run build -- --base=/payrol/",
+    "start": "npm --prefix backend start",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
+    "db:check": "npm --prefix backend run db:check",
+    "admin:create": "npm --prefix backend run admin:create",
+    "admin:reset-password": "npm --prefix backend run admin:reset-password"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

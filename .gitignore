@@ -1,0 +1,31 @@
+# dependencies
+node_modules/
+*/node_modules/
+
+# env & secrets (never commit real .env)
+# Any *.env or .env.* file at any depth (incl. atlas-credentials.env),
+# except the placeholder-only .env.example templates.
+.env
+*.env
+.env.*
+**/.env
+**/*.env
+**/.env.*
+!.env.example
+!**/.env.example
+# private keys / certificates
+*.pem
+*.key
+
+# build output
+frontend/dist/
+dist/
+
+# backend runtime data (uploaded files, generated PDFs, logs)
+backend/logs/*
+!backend/logs/.gitkeep
+
+# misc
+*.log
+.DS_Store
+npm-debug.log*

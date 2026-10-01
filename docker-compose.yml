@@ -1,0 +1,29 @@
+# AUN Payroll — production container, published at https://aun.edu.ng/payrol.
+#
+# AUN's Apache web server terminates HTTPS and forwards /payrol/ to this
+# container (see "Apache reverse proxy" in README.md).
+#
+# On the app server:
+#   1. Put the production settings in backend/.env.production
+#   2. docker compose up -d --build
+#   3. docker compose exec app npm run admin:create      (only if no admin exists yet)
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        # Must equal BASE_PATH in backend/.env.production
+        BASE_PATH: /payrol
+    env_file: backend/.env.production
+    restart: unless-stopped
+    ports:
+      # Reached only by the Apache proxy. If Apache runs on this same machine,
+      # keep 127.0.0.1; otherwise use the server's internal IP and firewall
+      # port 5000 to the Apache server only.
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - app-logs:/app/backend/logs
+
+volumes:
+  app-logs:

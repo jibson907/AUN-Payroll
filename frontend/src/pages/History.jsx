@@ -3,10 +3,13 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../services/api';
 import { Badge, Spinner, Empty } from '../components/ui';
 import { statusBadge, dateTime } from '../utils/format';
+import { useAuth } from '../auth/AuthContext';
+import { can } from '../utils/permissions';
 
 export default function History() {
   const [runs, setRuns] = useState(null);
   const nav = useNavigate();
+  const { user } = useAuth();
   useEffect(() => { api.get('/payroll/runs').then((d) => setRuns(d.runs)); }, []);
 
   if (!runs) return <div className="center" style={{ padding: 60 }}><Spinner dark /></div>;
@@ -15,7 +18,7 @@ export default function History() {
     <div className="card">
       <div className="card-head">
         <h3>Payroll Runs</h3>
-        <Link to="/upload" className="btn sm">+ New Payroll Run</Link>
+        {can(user, 'payroll.upload') && <Link to="/upload" className="btn sm">+ New Payroll Run</Link>}
       </div>
       {runs.length === 0 ? <Empty icon="🗂" title="No payroll runs yet">Upload a payroll file to create your first run.</Empty> : (
         <div className="table-wrap">

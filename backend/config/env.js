@@ -32,6 +32,9 @@ const env = {
   JWT_SECRET: process.env.JWT_SECRET || '',
   // Session lifetime (hours) — the JWT and its HttpOnly cookie expire together.
   SESSION_TTL_HOURS: Math.min(24, Math.max(1, Number(process.env.SESSION_TTL_HOURS) || 8)),
+  // Inactivity timeout (minutes): a session not used for this long ends, on the
+  // server (cookie/JWT expiry) and in the browser (idle sign-out). 2–60, default 10.
+  SESSION_IDLE_MINUTES: Math.min(60, Math.max(2, Number(process.env.SESSION_IDLE_MINUTES) || 10)),
   // Secure cookies require HTTPS. ON in production; can be forced with COOKIE_SECURE.
   COOKIE_SECURE: bool(process.env.COOKIE_SECURE, (process.env.NODE_ENV || 'development') === 'production'),
   // Number of reverse proxies in front of the API (0 = none). Only trust
@@ -71,6 +74,10 @@ const env = {
   EMAIL_BATCH_SIZE: Math.min(500, Math.max(1, Number(process.env.EMAIL_BATCH_SIZE) || 50)),
   EMAIL_CONCURRENCY: Math.min(5, Math.max(1, Number(process.env.EMAIL_CONCURRENCY) || 2)),
   EMAIL_BATCH_PAUSE_MS: Math.max(0, Number(process.env.EMAIL_BATCH_PAUSE_MS ?? 30000)),
+  // Temporary send problems are retried automatically after these waits (ms);
+  // only after the last one is the employee marked failed.
+  EMAIL_RETRY_DELAYS_MS: String(process.env.EMAIL_RETRY_DELAYS_MS || '60000,180000,300000')
+    .split(',').map((s) => Math.max(0, Number(s.trim()) || 0)).slice(0, 5),
 
   // Jobs / uploads
   JOB_CONCURRENCY: Math.min(8, Math.max(1, Number(process.env.JOB_CONCURRENCY) || 4)), // PDF generation

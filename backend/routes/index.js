@@ -2,7 +2,7 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const env = require('../config/env');
 const logger = require('../utils/logger');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requirePermission } = require('../middleware/auth');
 const { uploadSingle } = require('../middleware/upload');
 const authC = require('../controllers/authController');
 const payC = require('../controllers/payrollController');
@@ -50,20 +50,31 @@ router.post('/auth/login', loginPerIp, loginPerAccount, wrap(authC.login));
 router.get('/auth/me', requireAuth, wrap(authC.me));
 router.post('/auth/logout', requireAuth, wrap(authC.logout));
 router.post('/auth/change-password', requireAuth, wrap(authC.changePassword));
-router.get('/users', requireAuth, requireRole('admin'), wrap(authC.listUsers));
-router.post('/users', requireAuth, requireRole('admin'), wrap(authC.createUser));
+// Role-based access: every route below names its permission (config/permissions.js)
+const manageUsers = requirePermission('users.manage');
+router.get('/users', requireAuth, manageUsers, wrap(authC.listUsers));
+router.post('/users', requireAuth, manageUsers, wrap(authC.createUser));
+router.put('/users/:id', requireAuth, manageUsers, wrap(authC.updateUser));
+router.post('/users/:id/reset-password', requireAuth, manageUsers, wrap(authC.resetUserPassword));
+router.delete('/users/:id', requireAuth, manageUsers, wrap(authC.deleteUser));
 
 // dashboard
-router.get('/dashboard', requireAuth, wrap(dashC.summary));
-router.get('/audit', requireAuth, wrap(dashC.auditLog));
+router.get('/dashboard', requireAuth, requirePermission('dashboard.view'), wrap(dashC.summary));
+router.get('/audit', requireAuth, requirePermission('audit.view'), wrap(dashC.auditLog));
 
 // settings
 router.get('/settings', requireAuth, wrap(setC.get));
-router.put('/settings/smtp', requireAuth, requireRole('admin'), wrap(setC.updateSmtp));
-router.post('/settings/smtp/verify', requireAuth, requireRole('admin'), wrap(setC.verifySmtp));
+router.put('/settings/smtp', requireAuth, requirePermission('settings.email'), wrap(setC.updateSmtp));
+router.post('/settings/smtp/verify', requireAuth, requirePermission('settings.email'), wrap(setC.verifySmtp));
 
 // payroll runs
-const canProcess = requireRole('admin', 'payroll_officer');
+const canView = requirePermission('payroll.view');
+const canUpload = requirePermission('payroll.upload');
+const canGenerate = requirePermission('payroll.generate');
+const canSend = requirePermission('payroll.send');
+const canEdit = requirePermission('payroll.edit');
+const canDelete = requirePermission('payroll.delete');
+const canDownload = requirePermission('payslip.download');
 // Per-user limits on expensive / sensitive actions (a stolen session or a
 // stuck button must not be able to flood uploads, PDF renders or emails).
 const perUser = (name, limit, message) => rateLimit({
@@ -82,18 +93,21 @@ const jobLimit = perUser('job', 30, 'Too many generate/send requests. Please wai
 const resendLimit = perUser('resend', 60, 'Too many individual sends. Please wait a few minutes and try again.');
 const pdfLimit = perUser('pdf', 300, 'Too many PDF requests. Please wait a few minutes and try again.');
 
-router.post('/payroll/upload', requireAuth, canProcess, uploadLimit, uploadSingle, wrap(payC.upload));
-router.get('/payroll/runs', requireAuth, wrap(payC.listRuns));
-router.get('/payroll/runs/:id', requireAuth, wrap(payC.getRun));
-router.get('/payroll/runs/:id/employees', requireAuth, wrap(payC.getRunEmployees));
-router.get('/payroll/runs/:id/progress', requireAuth, wrap(payC.progress));
-router.post('/payroll/runs/:id/generate', requireAuth, canProcess, jobLimit, wrap(payC.generate));
-router.post('/payroll/runs/:id/send', requireAuth, canProcess, jobLimit, wrap(payC.send));
-router.post('/payroll/runs/:id/retry-failed', requireAuth, canProcess, jobLimit, wrap(payC.retryFailed));
+router.post('/payroll/upload', requireAuth, canUpload, uploadLimit, uploadSingle, wrap(payC.upload));
+router.get('/payroll/runs', requireAuth, canView, wrap(payC.listRuns));
+router.get('/payroll/runs/:id', requireAuth, canView, wrap(payC.getRun));
+router.delete('/payroll/runs/:id', requireAuth, canDelete, wrap(payC.deleteRun));
+router.get('/payroll/runs/:id/employees', requireAuth, canView, wrap(payC.getRunEmployees));
+router.get('/payroll/runs/:id/progress', requireAuth, canView, wrap(payC.progress));
+router.post('/payroll/runs/:id/generate', requireAuth, canGenerate, jobLimit, wrap(payC.generate));
+router.post('/payroll/runs/:id/send', requireAuth, canSend, jobLimit, wrap(payC.send));
+router.post('/payroll/runs/:id/retry-failed', requireAuth, canSend, jobLimit, wrap(payC.retryFailed));
 
 // employee-level (":empId" is the payslip id)
-router.get('/payroll/employees/:empId', requireAuth, wrap(payC.getEmployee));
-router.get('/payroll/employees/:empId/pdf', requireAuth, pdfLimit, wrap(payC.employeePdf));
-router.post('/payroll/employees/:empId/resend', requireAuth, canProcess, resendLimit, wrap(payC.resendEmployee));
+router.get('/payroll/employees/:empId', requireAuth, canView, wrap(payC.getEmployee));
+router.put('/payroll/employees/:empId', requireAuth, canEdit, wrap(payC.updateEmployee));
+router.delete('/payroll/employees/:empId', requireAuth, canDelete, wrap(payC.deleteEmployee));
+router.get('/payroll/employees/:empId/pdf', requireAuth, canDownload, pdfLimit, wrap(payC.employeePdf));
+router.post('/payroll/employees/:empId/resend', requireAuth, canSend, resendLimit, wrap(payC.resendEmployee));
 
 module.exports = router;

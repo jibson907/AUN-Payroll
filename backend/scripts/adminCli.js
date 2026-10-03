@@ -50,7 +50,7 @@ function ask(question, { hidden = false } = {}) {
 async function askPassword(email) {
   for (;;) {
     // eslint-disable-next-line no-await-in-loop
-    const pw = await ask('Password (min 12 characters, hidden): ', { hidden: true });
+    const pw = await ask('Password (min 6 characters, hidden): ', { hidden: true });
     const weak = validatePassword(pw, { email });
     if (weak) { console.log(`  ✗ ${weak}`); continue; } // eslint-disable-line no-continue
     // eslint-disable-next-line no-await-in-loop

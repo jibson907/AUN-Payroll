@@ -201,10 +201,63 @@ table.data .num { text-align: right; font-variant-numeric: tabular-nums; white-s
 .kv dd { margin: 0; font-weight: 600; }
 
 @media (max-width: 1100px) { .grid.cols-4 { grid-template-columns: repeat(2,1fr); } }
+/* ---------- tablets & phones (desktop layout above is unchanged) ---------- */
+.menu-btn { display: none; }
+.sidebar-backdrop { display: none; }
 @media (max-width: 900px) {
-  .sidebar { transform: translateX(-100%); transition: .2s; }
+  .sidebar { transform: translateX(-100%); transition: .2s; box-shadow: 0 0 40px rgba(0,0,0,.25); }
   .sidebar.open { transform: none; }
+  .sidebar-backdrop { display: block; position: fixed; inset: 0; background: rgba(20,16,50,.45); z-index: 19; }
+  .menu-btn { display: inline-flex; font-size: 20px; padding: 4px 10px; color: var(--ink); }
   .main { margin-left: 0; }
-  .login-wrap { grid-template-columns: 1fr; } .login-hero { display: none; }
+  /* login: AUN panel with logo across the top half, sign-in card overlapping it */
+  /* one screen, no scrolling: exactly the visible height (dvh excludes the browser bars) */
+  .login-wrap { grid-template-columns: 1fr; grid-template-rows: auto 1fr; min-height: 0; height: 100vh; height: 100dvh; overflow: hidden; }
+  .login-hero { min-height: 0; height: 40dvh; padding: 20px 24px 64px; align-items: center; text-align: center; }
+  .login-hero img { height: 72px; width: 72px; margin-bottom: 14px; }
+  .login-hero h1 { font-size: 23px; margin-bottom: 0; }
+  .login-hero p, .login-card .help { display: none; }
+  .login-form-col { place-items: start center; padding: 0 16px; margin-top: -48px; position: relative; }
+  .login-card { background: var(--card); border-radius: 16px; padding: 24px 22px 22px; box-shadow: 0 12px 34px rgba(28,19,72,.18); }
+  .login-card .sub { margin-bottom: 18px; }
   .grid.cols-3, .grid.cols-2 { grid-template-columns: 1fr; }
+
+  /* wide content (tables) scrolls inside its card instead of widening the page */
+  .grid > *, .card { min-width: 0; }
+  .topbar { padding: 0 14px; }
+  .topbar .page-title { font-size: 16px; }
+  .content { padding: 14px; }
+  .card-pad { padding: 16px; }
+  .card-head { flex-wrap: wrap; gap: 10px; padding: 14px 16px; }
+  .card-head > .row { flex-wrap: wrap; width: 100%; }
+  .card-head .row { flex-wrap: wrap; }
+  .card-head .input, .card-head .select { width: 100% !important; }
+  .row.between { flex-wrap: wrap; gap: 10px; }
+
+  /* employee panel: details above the PDF preview */
+  .modal-backdrop { padding: 8px; }
+  .modal-split { grid-template-columns: 1fr !important; }
+  .modal-foot { flex-wrap: wrap; }
+  .kv { grid-template-columns: 120px 1fr; }
+}
+@media (max-width: 520px) {
+  .grid.cols-4 { grid-template-columns: 1fr 1fr; gap: 12px; }
+  .topbar .user .btn { padding: 6px 10px; }
+  .modal-foot .btn { flex: 1 1 auto; justify-content: center; }
+  table.data td, table.data th { padding: 10px 12px; }
+}
+/* phones can't show a PDF inside the page → point to Download PDF instead */
+.pdf-mobile-hint { display: none; }
+@media (max-width: 600px) {
+  .pdf-preview { display: none; }
+  .pdf-mobile-hint { display: block; }
+}
+/* very short phones (e.g. iPhone SE): smaller AUN panel so the sign-in card still fits */
+@media (max-width: 900px) and (max-height: 640px) {
+  .login-hero { height: 33dvh; padding: 14px 24px 56px; }
+  .login-hero img { height: 54px; width: 54px; margin-bottom: 10px; }
+  .login-hero h1 { font-size: 20px; }
+  .login-card { padding: 20px 20px 18px; }
+  .login-card .sub { margin-bottom: 14px; }
+  .login-card .field { margin-bottom: 12px; }
 }

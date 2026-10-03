@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate, Navigate } from 'react-router-dom';
+import { useNavigate, Navigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { Spinner } from '../components/ui';
 import logo from '../assets/aun-logo.png';
@@ -11,6 +11,8 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [params] = useSearchParams();
+  const idleNotice = params.get('idle') === '1' && !err;
 
   if (user) return <Navigate to="/" replace />;
 
@@ -38,6 +40,7 @@ export default function Login() {
         <form className="login-card" onSubmit={submit}>
           <h2>Payroll Sign-in</h2>
           <p className="sub">Authorised payroll staff only.</p>
+          {idleNotice && <div className="alert warn">You were signed out because of inactivity. Please sign in again.</div>}
           {err && <div className="alert error">{err}</div>}
           <div className="field">
             <label>Email address</label>

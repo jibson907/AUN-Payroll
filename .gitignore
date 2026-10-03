@@ -13,6 +13,9 @@ node_modules/
 **/.env.*
 !.env.example
 !**/.env.example
+# frontend build settings are public (no secrets)
+!frontend/.env.development
+!frontend/.env.production
 # private keys / certificates
 *.pem
 *.key

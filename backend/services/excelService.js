@@ -409,4 +409,6 @@ function buildSummary(employees, missingColumns) {
   return s;
 }
 
-module.exports = { parseWorkbook, deriveColorMapFromSheet, findHeaderRow };
+module.exports = {
+  parseWorkbook, deriveColorMapFromSheet, findHeaderRow, validateRecord, buildSummary,
+};

@@ -19,6 +19,7 @@ const { isValidObjectId } = require('mongoose');
 const env = require('../config/env');
 const { User } = require('../models');
 const logger = require('../utils/logger');
+const { PERMISSIONS } = require('../config/permissions');
 
 // At the root of its own domain the cookie uses the "__Host-" prefix (which
 // requires Path=/). Under a sub-path of a shared domain (e.g. aun.edu.ng/payrol)
@@ -57,17 +58,34 @@ function safeEqual(a, b) {
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 }
 
+/**
+ * Sign (or re-sign) the session cookie. Sliding expiry: the token lives
+ * SESSION_IDLE_MINUTES from its last use, but never beyond SESSION_TTL_HOURS
+ * after sign-in (`at`). Re-signing keeps the same jti, so the CSRF token is unchanged.
+ */
+function signSession(res, {
+  sub, tv, jti, authTime,
+}) {
+  const now = Math.floor(Date.now() / 1000);
+  const exp = Math.min(now + env.SESSION_IDLE_MINUTES * 60, authTime + env.SESSION_TTL_HOURS * 3600);
+  const token = jwt.sign(
+    {
+      sub, tv, at: authTime, exp,
+    },
+    env.JWT_SECRET,
+    {
+      algorithm: 'HS256', issuer: ISSUER, audience: AUDIENCE, jwtid: jti,
+    },
+  );
+  res.cookie(COOKIE, token, { ...cookieOptions(), maxAge: Math.max(0, exp - now) * 1000 });
+}
+
 /** Start a session for `user`: set the HttpOnly cookie, return the CSRF token. */
 function issueSession(res, user) {
   const jti = crypto.randomBytes(16).toString('base64url');
-  const token = jwt.sign(
-    { sub: String(user._id || user.id), tv: user.tokenVersion || 0 },
-    env.JWT_SECRET,
-    {
-      algorithm: 'HS256', expiresIn: `${env.SESSION_TTL_HOURS}h`, issuer: ISSUER, audience: AUDIENCE, jwtid: jti,
-    },
-  );
-  res.cookie(COOKIE, token, { ...cookieOptions(), maxAge: env.SESSION_TTL_HOURS * 3600 * 1000 });
+  signSession(res, {
+    sub: String(user._id || user.id), tv: user.tokenVersion || 0, jti, authTime: Math.floor(Date.now() / 1000),
+  });
   return csrfFor(jti);
 }
 
@@ -101,6 +119,15 @@ async function requireAuth(req, res, next) {
       id: user.id, email: user.email, role: user.role, name: user.name,
     };
     req.session = { csrfToken: csrf };
+    // Activity extends the session (at most once a minute). Background polling
+    // (progress bars) does not count as activity, so an unattended screen
+    // still times out.
+    const now = Math.floor(Date.now() / 1000);
+    if (now - (payload.iat || 0) >= 60 && !req.get('x-background')) {
+      signSession(res, {
+        sub: payload.sub, tv: payload.tv, jti: payload.jti, authTime: payload.at || payload.iat || now,
+      });
+    }
     return next();
   } catch (e) {
     return next(e);
@@ -118,6 +145,12 @@ function requireRole(...roles) {
   };
 }
 
+/** Allow the request only if the user's role has `permission` (config/permissions.js). */
+function requirePermission(permission) {
+  if (!PERMISSIONS[permission]) throw new Error(`Unknown permission "${permission}"`); // typo guard at boot
+  return requireRole(...PERMISSIONS[permission]);
+}
+
 module.exports = {
-  issueSession, clearSession, requireAuth, requireRole, COOKIE,
+  issueSession, clearSession, requireAuth, requireRole, requirePermission, COOKIE,
 };

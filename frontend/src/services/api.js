@@ -16,9 +16,21 @@ try { localStorage.removeItem(TOKEN_KEY); } catch { /* storage unavailable */ }
 const SAFE_METHODS = ['GET', 'HEAD'];
 const UNREACHABLE = 'The payroll server is not reachable right now. Please try again shortly or contact IT support.';
 
+// Used only when the server's reply has no message of its own.
+const STATUS_MESSAGES = {
+  401: 'Your session has expired. Please sign in again.',
+  403: 'You do not have permission to do this.',
+  404: 'The requested item or service was not found.',
+  429: 'Too many requests. Please wait a minute and try again.',
+  500: 'The payroll server had a problem. Please try again or contact IT support.',
+};
+const messageFor = (data, status) => (data && data.error) || STATUS_MESSAGES[status] || `Request failed (${status})`;
+
 async function request(method, path, body, opts = {}) {
   const headers = {};
   if (!SAFE_METHODS.includes(method) && csrfToken) headers['X-CSRF-Token'] = csrfToken;
+  // automatic polling must not count as user activity (inactivity sign-out)
+  if (opts.background) headers['X-Background'] = '1';
 
   let payload = body;
   if (body && !(body instanceof FormData)) {
@@ -47,7 +59,7 @@ async function request(method, path, body, opts = {}) {
   const text = await res.text();
   const data = text ? safeJson(text) : null;
   if (!res.ok) {
-    const err = new Error((data && data.error) || `Request failed (${res.status})`);
+    const err = new Error(messageFor(data, res.status));
     err.status = res.status;
     if (res.status === 401 && !path.startsWith('/auth/login') && !path.startsWith('/auth/me')) {
       setCsrfToken(null);
@@ -62,13 +74,13 @@ function safeJson(t) { try { return JSON.parse(t); } catch { return null; } }
 async function toError(res) {
   const t = await res.text().catch(() => '');
   const d = safeJson(t);
-  const e = new Error((d && d.error) || `Request failed (${res.status})`);
+  const e = new Error(messageFor(d, res.status));
   e.status = res.status;
   return e;
 }
 
 export const api = {
-  get: (p) => request('GET', p),
+  get: (p, opts) => request('GET', p, null, opts),
   post: (p, b) => request('POST', p, b),
   put: (p, b) => request('PUT', p, b),
   del: (p) => request('DELETE', p),

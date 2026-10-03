@@ -8,7 +8,7 @@
  *
  * Email layout follows the AUN Payroll sample:
  *   Subject:  Payroll: Pay Advice Slip for the month of June 2026
- *   Body:     "Dear <Employee Name>, Your pay advice for the pay period of …"
+ *   Body:     "Dear <Employee Name>, Your payslip for June 2026 is attached. …"
  *   Attach:   "<Employee Name> Pay Advice for June 2026.pdf"
  */
 const nodemailer = require('nodemailer');
@@ -71,38 +71,32 @@ function subjectFor(period) {
   return `Payroll: Pay Advice Slip for the month of ${cleanText(period)}`;
 }
 
-/** Plain-text + HTML body matching the AUN Payroll sample. */
+/**
+ * Plain-text + HTML body. `name` and `period` come from the payslip being
+ * sent (each employee's own record) — no name is ever written into the template.
+ */
 function buildBody(name, period) {
-  const who = cleanText(name) || 'Employee';
+  const who = cleanText(name) || 'Colleague';
   const p = cleanText(period);
   const year = new Date().getFullYear();
   const text = [
-    'American University of Nigeria',
-    '',
     `Dear ${who},`,
     '',
-    `Your pay advice for the pay period of ${p} is attached to this email.`,
-    '',
-    'Please review the attached PDF document for a detailed breakdown of your earnings. If you have any questions, please contact the Payroll department.',
+    `Your payslip for ${p} is attached. Please review the details and contact the Payroll Department if you have any questions.`,
     '',
     'Thank you,',
-    'The Payroll Team',
+    'AUN Payroll Team',
     '',
-    'This is an automated message from the Payroll Automation System. Please do not reply.',
+    'This is an automated message. Please do not reply.',
     '',
     `© ${year} American University of Nigeria. All Rights Reserved.`,
-    '',
-    'This email and any attachments are confidential and intended solely for the use of the individual to whom it is addressed.',
   ].join('\n');
   const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;line-height:1.5">
-<p>American University of Nigeria</p>
 <p>Dear ${esc(who)},</p>
-<p>Your pay advice for the pay period of ${esc(p)} is attached to this email.</p>
-<p>Please review the attached PDF document for a detailed breakdown of your earnings. If you have any questions, please contact the Payroll department.</p>
-<p>Thank you,<br/>The Payroll Team</p>
-<p>This is an automated message from the Payroll Automation System. Please do not reply.</p>
-<p>&copy; ${year} American University of Nigeria. All Rights Reserved.</p>
-<p>This email and any attachments are confidential and intended solely for the use of the individual to whom it is addressed.</p>
+<p>Your payslip for <b>${esc(p)}</b> is attached. Please review the details and contact the Payroll Department if you have any questions.</p>
+<p>Thank you,<br/><b>AUN Payroll Team</b></p>
+<p style="color:#666"><i>This is an automated message. Please do not reply.</i></p>
+<p style="color:#666;font-size:12px">&copy; ${year} American University of Nigeria. All Rights Reserved.</p>
 </div>`;
   return { text, html };
 }
@@ -116,7 +110,7 @@ async function sendPayAdvice({
   toEmail, employeeName, period, pdfBuffer, pdfFilename,
 }) {
   // Re-validated here as well: a single plain mailbox, never a list or display name.
-  if (!isValidEmail(toEmail)) throw new Error('Invalid recipient email address.');
+  if (!isValidEmail(toEmail)) throw Object.assign(new Error('Invalid recipient email address.'), { kind: 'address' });
   const { transport, cfg } = await getTransport();
   const body = buildBody(employeeName, period);
 
@@ -133,7 +127,10 @@ async function sendPayAdvice({
   // the provider must have accepted exactly this one recipient
   const accepted = (info.accepted || []).map((a) => String(a.address || a).toLowerCase());
   if (!accepted.includes(toEmail.toLowerCase())) {
-    throw new Error(`The mail server did not accept the recipient (${String(info.response || 'rejected').slice(0, 120)}).`);
+    throw Object.assign(
+      new Error(`The mail server did not accept the recipient (${String(info.response || 'rejected').slice(0, 120)}).`),
+      { kind: 'address' },
+    );
   }
   logger.info('email_sent', { to: toEmail, messageId: info.messageId });
   return { messageId: info.messageId, accepted };

@@ -112,7 +112,7 @@ async function bootstrap() {
     origin: env.FRONTEND_URL.split(',').map((o) => o.trim()),
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'X-CSRF-Token'],
+    allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Background'],
   }));
   // JSON only (no urlencoded form bodies — the classic cross-site form vector);
   // file uploads are handled separately by multer.

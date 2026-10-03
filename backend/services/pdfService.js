@@ -105,7 +105,7 @@ async function renderToBuffer(advice, period) {
 const readable = (s, max) => String(s || '').normalize('NFC')
   .replace(/[^\p{L}\p{M}\p{N} .'-]+/gu, ' ').replace(/\.{2,}/g, '.').replace(/\s+/g, ' ').trim().slice(0, max);
 
-/** "Jibrin Muhammad Auwal Pay Advice for June 2026.pdf" */
+/** "<Employee Name> Pay Advice for June 2026.pdf" */
 function adviceFilename(employee, period) {
   const name = readable(employee.name, 120) || 'Employee';
   const p = readable(period, 40);

@@ -8,7 +8,10 @@
 // '' at the root of a domain, '/payrol' for https://aun.edu.ng/payrol.
 export const BASE_PATH = import.meta.env.BASE_URL.replace(/\/+$/, '');
 
-export const API_URL = import.meta.env.VITE_API_URL || `${BASE_PATH}/api`;
+// /payrol/api in production, /api in development (see .env.production / .env.development).
+// VITE_API_URL is the older name of the same setting.
+export const API_URL = (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || `${BASE_PATH}/api`)
+  .replace(/\/+$/, '');
 
 // Full browser path of the sign-in page (for hard redirects outside the router).
 export const LOGIN_PATH = `${BASE_PATH}/login`;

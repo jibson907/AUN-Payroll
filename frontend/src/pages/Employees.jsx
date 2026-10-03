@@ -1,13 +1,10 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '../services/api';
-import { useAuth } from '../auth/AuthContext';
 import { Spinner, Empty, Badge } from '../components/ui';
 import EmployeeDrawer from '../components/EmployeeDrawer';
 import { naira, statusBadge } from '../utils/format';
 
 export default function Employees() {
-  const { user } = useAuth();
-  const canProcess = ['admin', 'payroll_officer'].includes(user?.role);
   const [runs, setRuns] = useState([]);
   const [runId, setRunId] = useState('');
   const [search, setSearch] = useState('');
@@ -78,7 +75,7 @@ export default function Employees() {
         )}
       </div>
 
-      {openEmp && <EmployeeDrawer empId={openEmp} canProcess={canProcess} onClose={() => setOpenEmp(null)} onChanged={load} />}
+      {openEmp && <EmployeeDrawer empId={openEmp} onClose={() => setOpenEmp(null)} onChanged={load} />}
     </>
   );
 }

@@ -22,8 +22,11 @@ const excel = require('./excelService');
 const pdf = require('./pdfService');
 const email = require('./emailService');
 const audit = require('./auditService');
+const emailCheck = require('../utils/emailCheck');
 const logger = require('../utils/logger');
-const { safeFilePart, isValidEmail, MONTHS } = require('../utils/validators');
+const {
+  safeFilePart, isValidEmail, cleanText, MONTHS,
+} = require('../utils/validators');
 
 const { isValidObjectId, Types } = mongoose;
 const env = require('../config/env');
@@ -495,21 +498,47 @@ async function sendRun({
     // never resend already-sent; skipped rows are never sent
     const statuses = onlyFailed ? ['FAILED'] : ['PENDING', 'FAILED'];
     const targets = await EmailLog.find({ batch: batch._id, status: { $in: statuses } }, { _id: 1 }).sort({ _id: 1 }).lean();
+    const retryDelays = env.EMAIL_RETRY_DELAYS_MS;
+    let paused = null; // set when the sending ACCOUNT can't send (bad login, daily limit)
 
     // Controlled delivery: EMAIL_BATCH_SIZE emails per batch, at most
     // EMAIL_CONCURRENCY at a time, then pause EMAIL_BATCH_PAUSE_MS — never
     // hundreds of emails at once. One failure never stops the rest.
-    const size = env.EMAIL_BATCH_SIZE;
-    const totalBatches = Math.ceil(targets.length / size);
-    for (let i = 0; i < targets.length; i += size) {
-      const n = i / size + 1;
-      logger.info('email_batch_start', { runId: key, batch: n, of: totalBatches, emails: Math.min(size, targets.length - i) });
+    const pass = async (ids, claimStatuses, finalAttempt) => {
+      const size = env.EMAIL_BATCH_SIZE;
+      const totalBatches = Math.ceil(ids.length / size);
+      for (let i = 0; i < ids.length && !paused; i += size) {
+        logger.info('email_batch_start', { runId: key, batch: i / size + 1, of: totalBatches, emails: Math.min(size, ids.length - i) });
+        // eslint-disable-next-line no-await-in-loop
+        await mapWithConcurrency(ids.slice(i, i + size), env.EMAIL_CONCURRENCY, async (t) => {
+          if (paused) return;
+          await sendOne(t._id, { statuses: claimStatuses, finalAttempt }).catch((e) => {
+            if (e.kind === 'system') paused = paused || e;
+            logger.warn('send_one_failed', { emailLog: String(t._id), kind: e.kind, error: e.message });
+          });
+        });
+        // eslint-disable-next-line no-await-in-loop
+        if (!paused && i + size < ids.length) await new Promise((r) => setTimeout(r, env.EMAIL_BATCH_PAUSE_MS));
+      }
+    };
+
+    await pass(targets, statuses, retryDelays.length === 0);
+    // Temporary problems ("try again later", network, PDF engine) are retried
+    // automatically; only after the last round is an employee marked failed.
+    for (let r = 0; r < retryDelays.length && !paused; r += 1) {
       // eslint-disable-next-line no-await-in-loop
-      await mapWithConcurrency(targets.slice(i, i + size), env.EMAIL_CONCURRENCY, async (t) => {
-        await sendOne(t._id, { statuses }).catch((e) => logger.error('send_one_failed', { emailLog: String(t._id), error: e.message }));
+      const again = await EmailLog.find({ batch: batch._id, status: 'PENDING', nextAttemptAt: { $ne: null } }, { _id: 1 }).sort({ _id: 1 }).lean();
+      if (!again.length) break;
+      logger.info('email_retry_round', { runId: key, round: r + 1, emails: again.length, waitMs: retryDelays[r] });
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((res) => setTimeout(res, retryDelays[r]));
+      // eslint-disable-next-line no-await-in-loop
+      await pass(again, ['PENDING'], r === retryDelays.length - 1);
+    }
+    if (paused) {
+      await audit.record({
+        user, action: 'payroll.send.paused', entity: 'payroll_run', entityId: key, details: { reason: String(paused.message).slice(0, 300) },
       });
-      // eslint-disable-next-line no-await-in-loop
-      if (i + size < targets.length) await new Promise((r) => setTimeout(r, env.EMAIL_BATCH_PAUSE_MS));
     }
 
     const counts = await emailCounts(key);
@@ -536,8 +565,10 @@ async function sendRun({
  * The EmailLog is claimed atomically (status → SENDING) first; if it is not
  * in one of `statuses` (e.g. already SENT or being sent), nothing happens.
  */
-async function sendOne(emailLogId, { statuses = ['PENDING', 'FAILED'] } = {}) {
+async function sendOne(emailLogId, { statuses = ['PENDING', 'FAILED'], finalAttempt = true } = {}) {
   const now = new Date();
+  // returns the record as it was BEFORE the claim (to restore it if the
+  // sending account itself can't send)
   const log = await EmailLog.findOneAndUpdate(
     { _id: emailLogId, status: { $in: statuses } },
     {
@@ -546,7 +577,7 @@ async function sendOne(emailLogId, { statuses = ['PENDING', 'FAILED'] } = {}) {
       },
       $inc: { attemptCount: 1 },
     },
-    { returnDocument: 'after' },
+    { returnDocument: 'before' },
   );
   if (!log) return null;
 
@@ -556,11 +587,14 @@ async function sendOne(emailLogId, { statuses = ['PENDING', 'FAILED'] } = {}) {
       PayrollBatch.findById(log.batch, { periodLabel: 1 }).lean(),
     ]);
     // integrity checks: the payslip, recipient and batch must all match this log
-    if (!p || !batch || !p.valid) throw new Error('Payslip is missing or not valid for sending.');
+    if (!p || !batch || !p.valid) throw Object.assign(new Error('Payslip is missing or not valid for sending.'), { kind: 'address' });
     if (String(p.batch) !== String(log.batch) || p.email !== log.email) {
-      throw new Error('Payslip/recipient mismatch — not sent.');
+      throw Object.assign(new Error('Payslip/recipient mismatch — not sent.'), { kind: 'address' });
     }
-    if (!isValidEmail(p.email)) throw new Error('Invalid email address.');
+    if (!isValidEmail(p.email)) throw Object.assign(new Error('Invalid email address.'), { kind: 'address' });
+    // mistyped domain (gmial.com, aun.edu.n, …) → fail now, with a clear reason
+    const domain = await emailCheck.checkRecipientDomain(p.email);
+    if (!domain.ok) throw Object.assign(new Error(`${domain.reason} Correct the email address, then send again.`), { kind: 'address' });
 
     const { buffer, filename, sha } = await renderPayslip(p, batch.periodLabel);
     const result = await email.sendPayAdvice({
@@ -581,20 +615,46 @@ async function sendOne(emailLogId, { statuses = ['PENDING', 'FAILED'] } = {}) {
           providerMessageId: result.messageId ? String(result.messageId).slice(0, 200) : undefined,
           deliveredTo: p.email,
         },
-        $unset: { failureReason: 1, lockedAt: 1, lockOwner: 1 },
+        $unset: {
+          failureReason: 1, lockedAt: 1, lockOwner: 1, nextAttemptAt: 1,
+        },
         $push: { attempts: { $each: [{ at: sentAt, outcome: 'sent', provider: 'smtp', messageId: result.messageId ? String(result.messageId).slice(0, 200) : undefined }], $slice: -20 } },
       }),
       Payslip.updateOne({ _id: p._id }, { $set: { generatedAt: p.generatedAt || sentAt, pdfSha256: sha } }),
     ]);
     return { status: 'SENT' };
   } catch (e) {
-    const reason = String(e.message || 'Unknown error').slice(0, 500);
-    await EmailLog.updateOne({ _id: log._id }, {
-      $set: { status: 'FAILED', failureReason: reason },
-      $unset: { lockedAt: 1, lockOwner: 1 },
-      $push: { attempts: { $each: [{ at: new Date(), outcome: 'failed', provider: 'smtp', error: reason }], $slice: -20 } },
-    });
-    throw e;
+    const kind = emailCheck.classifySendError(e);
+    const detail = String((e.response || e.message) || 'Unknown error').slice(0, 400);
+    const attempt = { at: new Date(), outcome: 'failed', provider: 'smtp', error: detail.slice(0, 500) };
+    const unlock = { lockedAt: 1, lockOwner: 1 };
+
+    if (kind === 'system') {
+      // The sending ACCOUNT can't send (wrong password, daily limit): nobody is
+      // failed — this employee goes back to where it was and sending pauses.
+      const set = { status: log.status };
+      if (log.status !== 'SENT') set.failureReason = `Not sent yet — sending paused: ${detail}`.slice(0, 500);
+      await EmailLog.updateOne({ _id: log._id }, {
+        $set: set, $unset: { ...unlock, nextAttemptAt: 1 }, $inc: { attemptCount: -1 },
+      });
+    } else if (kind === 'temporary' && !finalAttempt) {
+      // will be retried automatically by the running send job
+      await EmailLog.updateOne({ _id: log._id }, {
+        $set: { status: 'PENDING', failureReason: `Temporary problem — retrying automatically: ${detail}`.slice(0, 500), nextAttemptAt: new Date(Date.now() + 60000) },
+        $unset: unlock,
+        $push: { attempts: { $each: [attempt], $slice: -20 } },
+      });
+    } else {
+      const reason = kind === 'address'
+        ? `Email address problem: ${detail}`
+        : `Not delivered after ${log.attemptCount + 1} attempt(s) (temporary problem): ${detail} — use Retry Failed later.`;
+      await EmailLog.updateOne({ _id: log._id }, {
+        $set: { status: 'FAILED', failureReason: reason.slice(0, 500) },
+        $unset: { ...unlock, nextAttemptAt: 1 },
+        $push: { attempts: { $each: [attempt], $slice: -20 } },
+      });
+    }
+    throw Object.assign(e, { kind });
   }
 }
 
@@ -610,11 +670,21 @@ async function resendEmployee({ employeeId, user, ip }) {
 
   // explicit single resend: may re-send an already-SENT payslip (audited)
   let res;
-  try {
-    res = await sendOne(log._id, { statuses: ['PENDING', 'FAILED', 'SENT'] });
-  } catch (e) {
-    // the reason is recorded on the delivery record; show it to the admin too
-    throw httpError(424, `The email could not be sent: ${String(e.message).slice(0, 200)}`);
+  // a temporary problem gets one quick automatic retry before reporting
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      res = await sendOne(log._id, { statuses: ['PENDING', 'FAILED', 'SENT'], finalAttempt: attempt >= 2 });
+      break;
+    } catch (e) {
+      if (e.kind === 'temporary' && attempt < 2) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r) => setTimeout(r, 3000));
+        continue; // eslint-disable-line no-continue
+      }
+      // the reason is recorded on the delivery record; show it to the admin too
+      throw httpError(424, `The email could not be sent: ${String(e.message).slice(0, 200)}`);
+    }
   }
   if (!res) throw httpError(409, 'This pay advice is already being sent.');
   await audit.record({
@@ -626,6 +696,277 @@ async function resendEmployee({ employeeId, user, ip }) {
     details: { employeeId: p.employeeId, previousStatus: log.status },
   });
   return getEmployee(p._id);
+}
+
+/* --------------------- admin corrections: edit / delete ------------------- */
+
+// Editable text fields → [path in the advice snapshot, label, max length]
+const EDITABLE_TEXT = {
+  name: [['employee', 'name'], 'Employee name', 200],
+  employeeId: [['employee', 'employeeId'], 'Employee ID', 64],
+  department: [['employee', 'department'], 'Department', 200],
+  designation: [['employee', 'designation'], 'Designation', 200],
+  bank: [['employee', 'bank'], 'Bank', 120],
+  accountNo: [['employee', 'accountNo'], 'Account number', 40],
+  tin: [['bankTax', 'tin'], 'TIN', 40],
+  pfaName: [['pension', 'pfaName'], 'PFA name', 200],
+  pensionPin: [['pension', 'pensionPin'], 'Pension PIN', 40],
+  nhfNumber: [['pension', 'nhfNumber'], 'NHF number', 40],
+};
+
+const round2 = (n) => Math.round(n * 100) / 100;
+/** Amount from the edit form: number or numeric string (commas allowed). */
+function editAmount(v, label) {
+  const n = typeof v === 'number' ? v : Number(String(v == null ? '' : v).replace(/[,\s₦]/g, ''));
+  if (!Number.isFinite(n) || Math.abs(n) > 1e11) throw httpError(400, `${label}: enter a valid amount.`);
+  return round2(n);
+}
+
+/** Block corrections while the run is being generated/sent or this email is in flight. */
+async function assertEditable(p) {
+  if (inFlight.has(String(p.batch))) {
+    throw httpError(409, 'This payroll run is being processed right now. Wait for it to finish, then try again.');
+  }
+  const log = await EmailLog.findOne({ payslip: p._id }).lean();
+  if (log && log.status === 'SENDING') throw httpError(409, 'This pay advice is being emailed right now. Try again in a moment.');
+  return log;
+}
+
+/** Re-derive the run's validation summary and counts from its stored records. */
+async function refreshBatchSummary(batchId) {
+  const batch = await PayrollBatch.findById(batchId, { validationSummary: 1 }).lean();
+  if (!batch) return;
+  const rows = await Payslip.find({ batch: batchId }, { valid: 1, issues: 1 }).lean();
+  const summary = excel.buildSummary(
+    rows.map((r) => ({ valid: r.valid, issues: r.issues || [] })),
+    (batch.validationSummary && batch.validationSummary.missingColumns) || [],
+  );
+  const counts = await emailCounts(batchId);
+  await PayrollBatch.updateOne({ _id: batchId }, {
+    $set: {
+      validationSummary: summary,
+      'counts.total': summary.total,
+      'counts.valid': summary.valid,
+      'counts.invalid': summary.invalid,
+      'counts.generated': counts.generated,
+      'counts.sent': counts.sent,
+      'counts.failed': counts.failed,
+      'counts.skipped': counts.skipped,
+      'counts.pending': counts.pending,
+    },
+  });
+}
+
+/**
+ * Admin correction of one employee's payroll record. The edited record is
+ * re-validated with the SAME rules as an upload. Totals are recalculated from
+ * the line items only when an amount changed. The PDF is re-rendered from the
+ * corrected data on the next preview/send; an already-sent employee keeps the
+ * "sent" status until the admin re-sends the corrected pay advice.
+ */
+async function updateEmployeeRecord({
+  payslipId, changes, user, ip,
+}) {
+  if (!isValidObjectId(payslipId)) throw httpError(404, 'Employee not found.');
+  const p = await Payslip.findById(payslipId).lean();
+  if (!p) throw httpError(404, 'Employee not found.');
+  const log = await assertEditable(p);
+  const c = changes || {};
+
+  const advice = JSON.parse(JSON.stringify(p.advice));
+  const changed = [];
+  Object.entries(EDITABLE_TEXT).forEach(([key, [[group, field], label, max]]) => {
+    if (c[key] === undefined) return;
+    const v = cleanText(c[key]);
+    if (v.length > max) throw httpError(400, `${label} is too long (max ${max} characters).`);
+    if (v !== (advice[group][field] || '')) { advice[group][field] = v; changed.push(key); }
+  });
+  let emailAddr = p.email;
+  if (c.email !== undefined) {
+    const v = cleanText(c.email).replace(/^mailto:/i, '').toLowerCase();
+    if (v.length > 254) throw httpError(400, 'Email address is too long.');
+    if (v !== p.email) { emailAddr = v; changed.push('email'); }
+  }
+
+  let amountsChanged = false;
+  if (c.annualSalary !== undefined) {
+    const v = editAmount(c.annualSalary, 'Annual salary');
+    if (v !== advice.annualSalary) { advice.annualSalary = v; changed.push('annualSalary'); }
+  }
+  ['earnings', 'deductions'].forEach((kind) => {
+    if (c[kind] === undefined) return;
+    if (!Array.isArray(c[kind]) || c[kind].length !== advice[kind].length) {
+      throw httpError(400, `The ${kind} list does not match this record. Reload the page and try again.`);
+    }
+    c[kind].forEach((v, i) => {
+      const n = editAmount(v, advice[kind][i].label);
+      if (n !== advice[kind][i].amount) { advice[kind][i].amount = n; amountsChanged = true; }
+    });
+    if (amountsChanged && !changed.includes(kind)) changed.push(kind);
+  });
+  if (!changed.length) return getEmployee(p._id);
+
+  const earnSum = round2(advice.earnings.reduce((s, x) => s + x.amount, 0));
+  const dedSum = round2(advice.deductions.reduce((s, x) => s + x.amount, 0));
+  if (amountsChanged) {
+    advice.totals = { grossEarnings: earnSum, grossDeductions: dedSum, netPay: round2(earnSum - dedSum) };
+  }
+  const t = advice.totals;
+  const near = (a, b) => Math.abs((a || 0) - (b || 0)) <= 1.0;
+  advice.reconciliation = {
+    earningsSum: earnSum,
+    deductionsSum: dedSum,
+    earningsMatch: near(earnSum, t.grossEarnings),
+    deductionsMatch: near(dedSum, t.grossDeductions),
+    netMatch: near(t.grossEarnings - t.grossDeductions, t.netPay),
+  };
+
+  // same validation as an upload, plus duplicates against the rest of this run
+  const issues = excel.validateRecord({ email: emailAddr, numericIssues: [], advice });
+  const others = { batch: p.batch, _id: { $ne: p._id }, valid: true };
+  const idRx = new RegExp(`^${escapeRegex(advice.employee.employeeId)}$`, 'i');
+  if (advice.employee.employeeId && await Payslip.exists({ ...others, employeeId: idRx })) {
+    issues.push('Duplicate employee ID (another record in this run)');
+  }
+  if (emailAddr && await Payslip.exists({ ...others, email: emailAddr })) {
+    issues.push('Duplicate email (another record in this run)');
+  }
+  const valid = issues.filter((i) => !i.includes('(warning)')).length === 0;
+
+  let employeeRef;
+  if (valid) {
+    const dir = await Employee.findOneAndUpdate(
+      { employeeId: advice.employee.employeeId },
+      {
+        $set: {
+          name: advice.employee.name,
+          email: emailAddr,
+          department: advice.employee.department,
+          designation: advice.employee.designation,
+          lastBatch: p.batch,
+          lastSeenAt: new Date(),
+        },
+      },
+      { upsert: true, returnDocument: 'after', projection: { _id: 1 } },
+    );
+    employeeRef = dir._id;
+  }
+
+  try {
+    await Payslip.updateOne({ _id: p._id }, {
+      $set: {
+        ...(employeeRef ? { employee: employeeRef } : {}),
+        employeeId: advice.employee.employeeId,
+        name: advice.employee.name,
+        email: emailAddr,
+        department: advice.employee.department,
+        designation: advice.employee.designation,
+        grossPay: t.grossEarnings,
+        totalDeductions: t.grossDeductions,
+        netPay: t.netPay,
+        advice,
+        valid,
+        issues: issues.slice(0, 50),
+      },
+      // the stored PDF fingerprint belongs to the old data
+      $unset: { generatedAt: 1, pdfSha256: 1, ...(employeeRef ? {} : { employee: 1 }) },
+    }, { runValidators: true });
+  } catch (e) {
+    if (e && e.code === 11000) throw httpError(409, 'Another valid record in this run already has that employee ID.');
+    throw asBadRequest(e);
+  }
+
+  // keep the delivery record in step (its recipient must match the payslip)
+  if (log) {
+    const set = { email: emailAddr, employeeName: advice.employee.name, employeeId: advice.employee.employeeId };
+    if (employeeRef) set.employee = employeeRef;
+    const update = { $set: set };
+    if (!valid && log.status !== 'SENT') {
+      set.status = 'SKIPPED';
+      set.failureReason = issues.filter((i) => !i.includes('(warning)')).join('; ').slice(0, 500);
+    } else if (valid && log.status === 'SKIPPED') {
+      set.status = 'PENDING';
+      update.$unset = { failureReason: 1 };
+    }
+    await EmailLog.updateOne({ _id: log._id }, update);
+  }
+  await refreshBatchSummary(p.batch);
+
+  await audit.record({
+    user,
+    action: 'payroll.record_edited',
+    entity: 'employee',
+    entityId: String(p._id),
+    ip,
+    // field NAMES only — never salaries or bank details in the audit log
+    details: {
+      employeeId: advice.employee.employeeId, changed, valid, alreadySent: !!(log && log.status === 'SENT'),
+    },
+  });
+  return getEmployee(p._id);
+}
+
+/** Admin: remove one employee's record (and its delivery record) from a run. */
+async function deleteEmployeeRecord({ payslipId, user, ip }) {
+  if (!isValidObjectId(payslipId)) throw httpError(404, 'Employee not found.');
+  const p = await Payslip.findById(payslipId, { batch: 1, employeeId: 1, name: 1 }).lean();
+  if (!p) throw httpError(404, 'Employee not found.');
+  const log = await assertEditable(p);
+
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      await EmailLog.deleteMany({ payslip: p._id }, { session });
+      await Payslip.deleteOne({ _id: p._id }, { session });
+    });
+  } finally {
+    await session.endSession();
+  }
+  await refreshBatchSummary(p.batch);
+  await audit.record({
+    user,
+    action: 'payroll.record_deleted',
+    entity: 'employee',
+    entityId: String(p._id),
+    ip,
+    details: { employeeId: p.employeeId, runId: String(p.batch), emailStatus: log ? log.status : null },
+  });
+  return { ok: true, runId: String(p.batch) };
+}
+
+/** Admin: delete a whole payroll run with all its records and delivery records. */
+async function deleteRun({ runId, user, ip }) {
+  const batch = await findBatch(runId);
+  if (!batch) throw httpError(404, 'Payroll run not found.');
+  const key = String(batch._id);
+  if (inFlight.has(key)) throw httpError(409, 'This payroll run is being processed right now. Wait for it to finish, then try again.');
+  if (await EmailLog.exists({ batch: batch._id, status: 'SENDING' })) {
+    throw httpError(409, 'Pay advices from this run are being emailed right now. Try again in a moment.');
+  }
+  const counts = await emailCounts(key);
+
+  const session = await mongoose.startSession();
+  let removed = 0;
+  try {
+    await session.withTransaction(async () => {
+      await EmailLog.deleteMany({ batch: batch._id }, { session });
+      removed = (await Payslip.deleteMany({ batch: batch._id }, { session })).deletedCount;
+      await PayrollBatch.deleteOne({ _id: batch._id }, { session });
+    });
+  } finally {
+    await session.endSession();
+  }
+  await audit.record({
+    user,
+    action: 'payroll.run_deleted',
+    entity: 'payroll_run',
+    entityId: key,
+    ip,
+    details: {
+      period: batch.periodLabel, filename: batch.originalFilename, records: removed, alreadySent: counts.sent,
+    },
+  });
+  return { ok: true };
 }
 
 /* -------------------------------- helpers -------------------------------- */
@@ -698,6 +1039,9 @@ module.exports = {
   sendRun,
   sendOne,
   resendEmployee,
+  updateEmployeeRecord,
+  deleteEmployeeRecord,
+  deleteRun,
   runProgress,
   emailCounts,
   batchTotals,

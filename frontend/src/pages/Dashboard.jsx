@@ -102,7 +102,17 @@ function prettyAction(a) {
     'settings.smtp_updated': 'Updated SMTP settings',
     'payroll.replaced': 'Replaced an unsent payroll upload',
     'auth.logout': 'Signed out',
+    'auth.logout_idle': 'Signed out automatically (inactivity)',
     'auth.password_changed': 'Changed password',
+    'payroll.record_edited': 'Edited a payroll record',
+    'payroll.record_deleted': 'Deleted a payroll record',
+    'payroll.run_deleted': 'Deleted a payroll run',
+    'payroll.send.paused': 'Sending paused — email account problem',
+    'user.created': 'Added a user',
+    'user.updated': 'Updated a user',
+    'user.role_changed': 'Changed a user role',
+    'user.password_reset': 'Reset a user password',
+    'user.deleted': 'Deleted a user',
   };
   return map[a] || a;
 }

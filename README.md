@@ -103,7 +103,7 @@ cp backend/.env.production backend/.env
 cd backend && node server.js       (run under a process manager, e.g. pm2 or systemd)
 ```
 
-`npm run build:prod` works the same in PowerShell, cmd and Git Bash. Plain `npm run build` is for the root of a domain: uploading that build to /payrol gives a blank page.
+`npm run build` and `npm run build:prod` both build for `/payrol` (from `frontend/.env.production`); `npm run dev` runs at the root of localhost.
 
 ### Apache reverse proxy (for AUN IT, on the aun.edu.ng server)
 
@@ -150,7 +150,7 @@ The app **must** be served over HTTPS: it sends HSTS, a strict Content-Security-
 ## Security summary
 
 - Sessions: short-lived JWT in an **HttpOnly, Secure, SameSite=Strict** cookie (never in `localStorage`); CSRF token on every change; server-side logout; password change signs out other devices.
-- Login: bcrypt (cost ≥ 12), password policy (≥ 12 chars, no common passwords), per-account lockout after 5 failures, per-IP and per-account rate limits, no account enumeration.
+- Login: bcrypt (cost ≥ 12), password policy (≥ 6 chars, no common or predictable passwords), per-account lockout after 5 failures, per-IP and per-account rate limits, no account enumeration.
 - Authorization enforced on the server for every route (admin / payroll officer / viewer).
 - Uploads: `.xlsx` only, ZIP-bomb/macro/path-traversal checks, size and shape limits, strict per-row validation; files never stored.
 - Payslips: rendered in memory, never written to disk; downloadable only by signed-in users; `Cache-Control: no-store`.

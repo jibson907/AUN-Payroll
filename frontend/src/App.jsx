@@ -2,6 +2,7 @@ import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './auth/AuthContext';
 import Layout from './components/Layout';
 import { Spinner } from './components/ui';
+import { can } from './utils/permissions';
 
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
@@ -12,12 +13,13 @@ import Employees from './pages/Employees';
 import AuditLog from './pages/AuditLog';
 import Settings from './pages/Settings';
 
-function Protected({ children, adminOnly }) {
+function Protected({ children, adminOnly, perm }) {
   const { user, loading } = useAuth();
   const loc = useLocation();
   if (loading) return <div style={{ display: 'grid', placeItems: 'center', height: '100vh' }}><Spinner dark /></div>;
   if (!user) return <Navigate to="/login" state={{ from: loc.pathname }} replace />;
   if (adminOnly && user.role !== 'admin') return <Navigate to="/" replace />;
+  if (perm && !can(user, perm)) return <Navigate to="/" replace />;
   return <Layout>{children}</Layout>;
 }
 
@@ -26,7 +28,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/" element={<Protected><Dashboard /></Protected>} />
-      <Route path="/upload" element={<Protected><Upload /></Protected>} />
+      <Route path="/upload" element={<Protected perm="payroll.upload"><Upload /></Protected>} />
       <Route path="/history" element={<Protected><History /></Protected>} />
       <Route path="/history/:id" element={<Protected><RunDetail /></Protected>} />
       <Route path="/employees" element={<Protected><Employees /></Protected>} />

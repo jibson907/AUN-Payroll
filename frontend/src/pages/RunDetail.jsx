@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../auth/AuthContext';
 import { useToast } from '../components/Toast';
@@ -7,6 +7,7 @@ import { usePolling } from '../hooks/usePolling';
 import { Badge, Spinner, Empty, ProgressBar, Modal } from '../components/ui';
 import EmployeeDrawer from '../components/EmployeeDrawer';
 import { naira, statusBadge, dateTime } from '../utils/format';
+import { can } from '../utils/permissions';
 
 const FILTERS = [
   { k: '', label: 'All' }, { k: 'valid', label: 'Valid' }, { k: 'invalid', label: 'Errors' },
@@ -17,10 +18,13 @@ export default function RunDetail() {
   const { id } = useParams();
   const { user } = useAuth();
   const toast = useToast();
-  const canProcess = ['admin', 'payroll_officer'].includes(user?.role);
+  const nav = useNavigate();
+  const mayGenerate = can(user, 'payroll.generate');
+  const maySend = can(user, 'payroll.send');
+  const mayDelete = can(user, 'payroll.delete');
 
   const [active, setActive] = useState(false);
-  const [runData] = usePolling(() => api.get(`/payroll/runs/${id}`), { active, interval: 2000 });
+  const [runData] = usePolling(() => api.get(`/payroll/runs/${id}`, { background: true }), { active, interval: 2000 });
   const run = runData?.run;
   const counts = runData?.counts;
 
@@ -31,17 +35,19 @@ export default function RunDetail() {
   const [openEmp, setOpenEmp] = useState(null);
   const [acting, setActing] = useState(false);
   const [confirm, setConfirm] = useState(null); // { path, label, title, body }
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => { if (run) setActive(run.jobActive); }, [run?.jobActive]);
 
-  const loadEmps = useCallback(async () => {
-    const d = await api.get(`/payroll/runs/${id}/employees?search=${encodeURIComponent(search)}&status=${filter}&page=${page}&pageSize=25`);
+  const loadEmps = useCallback(async (background = false) => {
+    const d = await api.get(`/payroll/runs/${id}/employees?search=${encodeURIComponent(search)}&status=${filter}&page=${page}&pageSize=25`, { background });
     setEmps(d);
   }, [id, search, filter, page]);
 
   useEffect(() => { loadEmps(); }, [loadEmps]);
   // refresh table when a job is active
-  useEffect(() => { if (active) { const t = setInterval(loadEmps, 2500); return () => clearInterval(t); } }, [active, loadEmps]);
+  useEffect(() => { if (active) { const t = setInterval(() => loadEmps(true), 2500); return () => clearInterval(t); } }, [active, loadEmps]);
 
   async function act(path, label) {
     setActing(true);
@@ -56,11 +62,24 @@ export default function RunDetail() {
     }
   }
 
+  async function deleteRun() {
+    setDeleting(true);
+    try {
+      await api.del(`/payroll/runs/${id}`);
+      toast.success('Payroll run deleted', `${run.period} and all its records were removed.`);
+      nav('/history');
+    } catch (e) {
+      toast.error('Could not delete', e.message);
+      setDeleting(false);
+      setConfirmDelete(false);
+    }
+  }
+
   if (!run) return <div className="center" style={{ padding: 60 }}><Spinner dark /></div>;
 
   const vs = run.validation_summary || {};
-  const canGenerate = canProcess && ['validated', 'generated', 'completed'].includes(run.status) && !run.jobActive;
-  const canSend = canProcess && ['generated', 'completed', 'sending'].includes(run.status) && !run.jobActive && vs.valid > 0;
+  const canGenerate = mayGenerate && ['validated', 'generated', 'completed'].includes(run.status) && !run.jobActive;
+  const canSend = maySend && ['generated', 'completed', 'sending'].includes(run.status) && !run.jobActive && vs.valid > 0;
   const hasFailed = (counts?.failed || 0) > 0;
 
   return (
@@ -85,8 +104,13 @@ export default function RunDetail() {
               ✉ Send Pay Advices
             </button>
             {hasFailed && (
-              <button className="btn danger" disabled={!canProcess || run.jobActive || acting} onClick={() => setConfirm({ path: 'retry-failed', label: 'Retrying failed emails', title: 'Retry failed emails?', body: `${counts.failed} failed email(s) will be sent again. Check the failure reasons first — an email interrupted by a server restart may already have been delivered.` })}>
+              <button className="btn danger" disabled={!maySend || run.jobActive || acting} onClick={() => setConfirm({ path: 'retry-failed', label: 'Retrying failed emails', title: 'Retry failed emails?', body: `${counts.failed} failed email(s) will be sent again. Check the failure reasons first — an email interrupted by a server restart may already have been delivered.` })}>
                 ↻ Retry Failed ({counts.failed})
+              </button>
+            )}
+            {mayDelete && (
+              <button className="btn secondary" style={{ color: 'var(--red)' }} disabled={run.jobActive || acting} onClick={() => setConfirmDelete(true)}>
+                🗑 Delete Run
               </button>
             )}
           </div>
@@ -210,8 +234,24 @@ export default function RunDetail() {
         </Modal>
       )}
 
+      {confirmDelete && (
+        <Modal title="Delete this payroll run?" onClose={() => !deleting && setConfirmDelete(false)}
+          footer={(
+            <>
+              <button className="btn secondary" disabled={deleting} onClick={() => setConfirmDelete(false)}>Cancel</button>
+              <button className="btn danger" disabled={deleting} onClick={deleteRun}>{deleting ? <Spinner /> : 'Yes, delete'}</button>
+            </>
+          )}
+        >
+          <p style={{ margin: 0 }}>
+            The {run.period} payroll run and all {vs.total ?? run.total_employees} employee record(s) in it will be permanently deleted. This cannot be undone.
+            {(counts?.sent || 0) > 0 && <><br /><br /><b>{counts.sent} pay advice(s) from this run were already emailed.</b> Deleting the run does not recall those emails.</>}
+          </p>
+        </Modal>
+      )}
+
       {openEmp && (
-        <EmployeeDrawer empId={openEmp} canProcess={canProcess} onClose={() => setOpenEmp(null)} onChanged={loadEmps} />
+        <EmployeeDrawer empId={openEmp} onClose={() => setOpenEmp(null)} onChanged={loadEmps} />
       )}
     </>
   );

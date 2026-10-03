@@ -100,6 +100,22 @@ async function resendEmployee(req, res) {
   });
 }
 
+// Admin corrections (payroll.edit / payroll.delete)
+async function updateEmployee(req, res) {
+  const employee = await payroll.updateEmployeeRecord({
+    payslipId: req.params.empId, changes: req.body, user: req.user, ip: req.ip,
+  });
+  return res.json({ employee });
+}
+
+async function deleteEmployee(req, res) {
+  return res.json(await payroll.deleteEmployeeRecord({ payslipId: req.params.empId, user: req.user, ip: req.ip }));
+}
+
+async function deleteRun(req, res) {
+  return res.json(await payroll.deleteRun({ runId: req.params.id, user: req.user, ip: req.ip }));
+}
+
 module.exports = {
   upload,
   listRuns,
@@ -112,4 +128,7 @@ module.exports = {
   getEmployee,
   employeePdf,
   resendEmployee,
+  updateEmployee,
+  deleteEmployee,
+  deleteRun,
 };
